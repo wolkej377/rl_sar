@@ -95,6 +95,7 @@ RL_Sim::RL_Sim(int argc, char **argv)
     // subscriber
     this->cmd_vel_subscriber = nh.subscribe<geometry_msgs::Twist>("/cmd_vel", 10, &RL_Sim::CmdvelCallback, this);
     this->joy_subscriber = nh.subscribe<sensor_msgs::Joy>("/joy", 10, &RL_Sim::JoyCallback, this);
+    this->depth_camera_subscriber = nh.subscribe<sensor_msgs::Image>("/depth_camera/image_raw", 1, &RL_Sim::DepthCameraCallback, this);
     this->model_state_subscriber = nh.subscribe<gazebo_msgs::ModelStates>("/gazebo/model_states", 10, &RL_Sim::ModelStatesCallback, this);
     for (int i = 0; i < this->params.Get<int>("num_of_dofs"); ++i)
     {
@@ -138,6 +139,12 @@ RL_Sim::RL_Sim(int argc, char **argv)
     this->robot_state_subscriber = ros2_node->create_subscription<robot_msgs::msg::RobotState>(
         this->ros_namespace + "robot_joint_controller/state", rclcpp::SystemDefaultsQoS(),
         [this] (const robot_msgs::msg::RobotState::SharedPtr msg) {this->RobotStateCallback(msg);}
+    );
+    
+    // Depth camera subscriber
+    this->depth_camera_subscriber = ros2_node->create_subscription<sensor_msgs::msg::Image>(
+        "/depth_camera/image_raw", rclcpp::SensorDataQoS(),
+        [this] (const sensor_msgs::msg::Image::SharedPtr msg) {this->DepthCameraCallback(msg);}
     );
 
     // service
@@ -470,6 +477,18 @@ void RL_Sim::RunModel()
         this->obs.dof_pos = this->robot_state.motor_state.q;
         this->obs.dof_vel = this->robot_state.motor_state.dq;
 
+        // ===== Depth Camera Data Processing =====
+        // Process depth camera every N steps (default: 5)
+        if (this->episode_length_buf % this->depth_camera_data.depth_process_interval == 0)
+        {
+            // Depth camera data is received asynchronously via ROS callback
+            // The raw_depth_image will be populated by DepthCameraCallback()
+            if (!this->depth_camera_data.raw_depth_image.empty())
+            {
+                this->depth_camera_data.has_new_data = true;
+            }
+        }
+
         this->obs.actions = this->Forward();
         this->ComputeOutput(this->obs.actions, this->output_dof_pos, this->output_dof_vel, this->output_dof_tau);
 
@@ -559,6 +578,65 @@ void RL_Sim::Plot()
     }
     // plt::legend();
     plt::pause(0.01);
+}
+
+void RL_Sim::CmdvelCallback(
+#if defined(USE_ROS1)
+    const geometry_msgs::Twist::ConstPtr &msg
+#elif defined(USE_ROS2)
+    const geometry_msgs::msg::Twist::SharedPtr msg
+#endif
+)
+{
+    this->cmd_vel = *msg;
+}
+
+void RL_Sim::DepthCameraCallback(
+#if defined(USE_ROS1)
+    const sensor_msgs::Image::ConstPtr &msg
+#elif defined(USE_ROS2)
+    const sensor_msgs::msg::Image::SharedPtr msg
+#endif
+)
+{
+    /**
+     * ROS depth camera callback
+     * 
+     * Converts ROS sensor_msgs::Image to std::vector<float>
+     * Expected format: float32 depth image with encoding "32FC1"
+     * Size: width * height (typically 58 * 87 = 5046)
+     * 
+     * This function runs in a separate ROS callback thread,
+     * so raw data is stored and processed later in RunModel()
+     */
+    
+    try {
+        if (msg->encoding != "32FC1") {
+            std::cerr << LOGGER::ERROR << "Expected depth image encoding '32FC1', got '" 
+                      << msg->encoding << "'" << std::endl;
+            return;
+        }
+        
+        // Calculate expected size: width * height
+        size_t expected_size = msg->width * msg->height;
+        size_t data_size = msg->data.size() / sizeof(float);
+        
+        if (data_size != expected_size) {
+            std::cerr << LOGGER::ERROR << "Depth image size mismatch: expected " 
+                      << expected_size << ", got " << data_size << std::endl;
+            return;
+        }
+        
+        // Convert ROS message data to std::vector<float>
+        const float* depth_ptr = reinterpret_cast<const float*>(msg->data.data());
+        this->depth_camera_data.raw_depth_image.assign(depth_ptr, depth_ptr + data_size);
+        
+        std::cout << LOGGER::DEBUG << "Received depth image: " << msg->width << "x" 
+                  << msg->height << " (size: " << data_size << ")" << std::endl;
+    }
+    catch (const std::exception &e) {
+        std::cerr << LOGGER::ERROR << "Exception in DepthCameraCallback: " << e.what() << std::endl;
+    }
 }
 
 #if defined(USE_ROS1)
