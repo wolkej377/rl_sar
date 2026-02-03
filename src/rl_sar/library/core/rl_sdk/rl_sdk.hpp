@@ -182,6 +182,19 @@ struct Observations
     std::vector<T> actions;
 };
 
+struct DepthCameraData
+{
+    std::vector<float> raw_depth_image;           // Raw depth image data (87*58 = 5046)
+    std::vector<float> depth_latent;              // Depth features (32 dims)
+    std::vector<float> depth_latent_and_yaw;      // Depth features + yaw (34 dims)
+    std::vector<float> gru_hidden_state;          // GRU hidden state for recurrent encoding (1*batch*512)
+    int step_counter;                             // Step counter for interval-based processing
+    int depth_process_interval;                   // Process depth every N steps (default: 5)
+    bool has_new_data;                            // Flag indicating new depth data available
+    
+    DepthCameraData() : step_counter(0), depth_process_interval(5), has_new_data(false) {}
+};
+
 class RL
 {
 public:
@@ -191,6 +204,7 @@ public:
     YamlParams params;
     Observations<float> obs;
     std::vector<int> obs_dims;
+    DepthCameraData depth_camera_data;
 
     RobotState<float> robot_state;
     RobotCommand<float> robot_command;
@@ -217,6 +231,21 @@ public:
     virtual void SetCommand(const RobotCommand<float> *command) = 0;
     void StateController(const RobotState<float> *state, RobotCommand<float> *command);
     void ComputeOutput(const std::vector<float> &actions, std::vector<float> &output_dof_pos, std::vector<float> &output_dof_vel, std::vector<float> &output_dof_tau);
+
+    // depth camera functions
+    void InitDepthCameraGRUState(int batch_size = 1);
+    void ResetDepthCameraGRUState();
+    std::vector<float> ProcessDepthCameraPreprocessing(
+        const std::vector<float> &raw_depth_data,
+        const std::vector<float> &proprioception
+    );
+    std::vector<float> ProcessDepthCameraPostprocessing(
+        const std::vector<float> &depth_encoder_output,
+        std::vector<float> &proprioception
+    );
+    const std::vector<float>& GetDepthLatent() const {
+        return depth_camera_data.depth_latent;
+    }
 
     // yaml params
     void ReadYaml(const std::string& file_path, const std::string& file_name);
@@ -252,6 +281,7 @@ public:
 
     // rl module
     std::unique_ptr<InferenceRuntime::Model> model;
+    std::unique_ptr<InferenceRuntime::Model> depth_encoder_model;  // depth camera encoder
     // output buffer
     std::vector<float> output_dof_tau;
     std::vector<float> output_dof_pos;
