@@ -253,10 +253,12 @@ public:
     virtual void SetCommand(const RobotCommand<float> *command) = 0;
     void StateController(const RobotState<float> *state, RobotCommand<float> *command);
     void ComputeOutput(const std::vector<float> &actions, std::vector<float> &output_dof_pos, std::vector<float> &output_dof_vel, std::vector<float> &output_dof_tau);
+    std::vector<float> GetContactFill();
 
     // depth camera functions
     std::vector<float> ProcessDepthImage(const float *raw_data, int width, int height);
     std::vector<std::vector<float>> GetDepthBuffer();
+    std::vector<float> DepthEncoderForward(const std::vector<float> &current_proprioception);
 
     // yaml params
     void ReadYaml(const std::string& file_path, const std::string& file_name);

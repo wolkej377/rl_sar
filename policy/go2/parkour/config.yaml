@@ -2,12 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 go2/parkour:
-  model_name: "himloco.pt"
+  model_name: "policy.pt"
   depth_encoder_model: "depth_latest.pt"  # Depth camera encoder model
 
-  num_observations: 45
-  observations: ["commands", "ang_vel", "gravity_vec", "dof_pos", "dof_vel", "actions"]
-  observations_history: [0, 1, 2, 3, 4, 5]  # 0 is the latest observation
+  num_observations: 53
+  observations: ["ang_vel", "parkour_commands", "dof_pos", "dof_vel", "actions", "contact_fill"]
+  observations_history: [9, 8, 7, 6, 5, 4, 3, 2, 1, 0]  # 0 is the latest observation
   observations_history_priority: "time"  # "time" or "term" priority
   clip_obs: 100.0
   clip_actions_lower: [-100, -100, -100,

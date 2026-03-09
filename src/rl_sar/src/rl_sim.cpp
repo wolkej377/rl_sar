@@ -523,17 +523,47 @@ std::vector<float> RL_Sim::Forward()
     }
 
     std::vector<float> clamped_obs = this->ComputeObservation();
+    std::vector<float> depth_latent_and_yaw = this->DepthEncoderForward(clamped_obs);
+
+    size_t n = depth_latent_and_yaw.size();
+
+    std::vector<float> depth_latent(
+        depth_latent_and_yaw.begin(),
+        depth_latent_and_yaw.end() - 2);
+
+    clamped_obs[6] = 1.5f * depth_latent_and_yaw[n - 2];
+    clamped_obs[7] = 1.5f * depth_latent_and_yaw[n - 1];
 
     std::vector<float> actions;
     if (this->params.Get<std::vector<int>>("observations_history").size() != 0)
     {
+        // 3. 将干净的 53 维特征压入历史队列，并提取出扁平化的 history_obs (530维)
         this->history_obs_buf.insert(clamped_obs);
         this->history_obs = this->history_obs_buf.get_obs_vec(this->params.Get<std::vector<int>>("observations_history"));
-        actions = this->model->forward({this->history_obs});
+
+        // 4. 构建全新的 753 维输入 x
+        std::vector<float> input_obs;
+        input_obs.reserve(753); // 预分配内存，避免 vector 动态扩容带来的性能损耗
+
+        // 步骤 A: 拼入当前观测 obs_buf (53维)
+        input_obs.insert(input_obs.end(), clamped_obs.begin(), clamped_obs.end());
+
+        // 步骤 B: 拼入占位符 (170维的 0.0f)
+        input_obs.insert(input_obs.end(), 170, 0.0f);
+
+        // 步骤 C: 拼入历史观测 obs_history_buffer (530维)
+        input_obs.insert(input_obs.end(), this->history_obs.begin(), this->history_obs.end());
+
+        // 5. 双输入前向推理：{x, scandots_latent}
+        actions = this->model->forward({input_obs, depth_latent});
     }
     else
     {
-        actions = this->model->forward({clamped_obs});
+        std::vector<float> input_obs;
+        input_obs.reserve(753);
+        input_obs.insert(input_obs.end(), clamped_obs.begin(), clamped_obs.end());
+        input_obs.insert(input_obs.end(), 700, 0.0f);
+        actions = this->model->forward({input_obs, depth_latent_and_yaw});
     }
 
     if (!this->params.Get<std::vector<float>>("clip_actions_upper").empty() && !this->params.Get<std::vector<float>>("clip_actions_lower").empty())

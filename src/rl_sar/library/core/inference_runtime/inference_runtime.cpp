@@ -56,7 +56,7 @@ bool TorchModel::load(const std::string& model_path)
     }
 }
 
-std::vector<float> TorchModel::forward(const std::vector<std::vector<float>>& inputs)
+std::vector<float> TorchModel::forward(const std::vector<std::vector<float>> &inputs)
 {
     if (!loaded_)
     {
@@ -66,23 +66,43 @@ std::vector<float> TorchModel::forward(const std::vector<std::vector<float>>& in
 #ifdef USE_TORCH
     try
     {
-        // Convert input vector to Torch tensor (use first input only)
-        const auto& input = inputs[0];
-        auto input_tensor = torch::tensor(input, torch::kFloat32).reshape({1, static_cast<int64_t>(input.size())});
+        // 1. 创建一个 IValue 向量，用于存放所有的模型输入
+        std::vector<torch::jit::IValue> torch_inputs;
+
+        // 2. 遍历你传入的双输入 (input_obs 和 depth_latent_and_yaw)
+        for (const auto &input : inputs)
+        {
+            auto input_tensor = torch::tensor(input, torch::kFloat32);
+
+            // --- 核心修复：恢复 CNN 所需的空间维度 ---
+            // 如果数据长度是 5046 (58 * 87)，说明这是深度图，重塑为 [batch, height, width]
+            if (input.size() == 5046)
+            {
+                input_tensor = input_tensor.reshape({1, 87, 58});
+            }
+            // 否则是本体感觉或历史特征等一维向量，重塑为 [batch, features]
+            else
+            {
+                input_tensor = input_tensor.reshape({1, static_cast<int64_t>(input.size())});
+            }
+
+            torch_inputs.push_back(input_tensor);
+        }
 
         // Disable gradient computation before each forward pass
         torch::autograd::GradMode::set_enabled(false);
+        // 注：如果你以后升级了 LibTorch，推荐用这句替换上面那句：torch::NoGradGuard no_grad;
 
         // Ensure single-threaded execution (critical for performance!)
         torch::set_num_threads(1);
 
-        // Execute forward inference
-        auto output = model_.forward({input_tensor}).toTensor();
+        // 3. 执行前向推理，直接传入准备好的 torch_inputs 数组
+        auto output = model_.forward(torch_inputs).toTensor();
 
         // Convert output tensor to vector
         return torch_to_vector(output);
     }
-    catch (const std::exception& e)
+    catch (const std::exception &e)
     {
         std::cout << LOGGER::ERROR << "Torch inference error: " << e.what() << std::endl;
         throw;

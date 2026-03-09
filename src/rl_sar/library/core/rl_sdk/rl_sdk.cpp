@@ -110,7 +110,6 @@ std::vector<float> RL::ComputeObservation()
         {
             obs_list.push_back(this->obs.actions);
         }
-        // ============= Depth Camera Observation =============
         // ============= Other Observations =============
         else if (observation == "whole_body_tracking/motion_command")
         {
@@ -166,6 +165,42 @@ std::vector<float> RL::ComputeObservation()
             std::vector<float> phase_vec = {phase};
             obs_list.push_back(phase_vec);
         }
+        else if (observation == "parkour_commands") // 对应 3~12 维 (打包合并，共 10维)
+        {
+            std::vector<float> parkour_cmds;
+
+            // 3~4: imu_obs (重力投影 X 和 Y) [2 dims]
+            std::vector<float> proj_grav = QuatRotateInverse(this->obs.base_quat, this->obs.gravity_vec);
+            parkour_cmds.push_back(proj_grav[0]);
+            parkour_cmds.push_back(proj_grav[1]);
+
+            // 5~7: 偏航角控制指令 [3 dims] (0*delta_yaw, delta_yaw, delta_next_yaw)
+            // 部署时将摇杆的 yaw 输入作为期望航向偏差
+            float delta_yaw = this->control.yaw;
+            float delta_next_yaw = this->control.yaw;
+            parkour_cmds.push_back(0.0f);           // 5: 被屏蔽的 yaw
+            parkour_cmds.push_back(delta_yaw);      // 6: 当前 yaw 误差
+            parkour_cmds.push_back(delta_next_yaw); // 7: 下一步 yaw 误差
+
+            // 8~10: 线速度控制指令 [3 dims] (0*cmd_x, 0*cmd_y, cmd_x)
+            float cmd_x = this->control.x;
+            float cmd_y = this->control.y;
+            parkour_cmds.push_back(0.0f);  // 8: 被屏蔽的 cmd_x
+            parkour_cmds.push_back(0.0f);  // 9: 被屏蔽的 cmd_y
+            parkour_cmds.push_back(cmd_x); // 10: 实际生效的 cmd_x
+
+            // 11~12: 环境索引 env_idx, invert_env_idx [2 dims]
+            // 真实机器人或单体仿真部署时，只有一个环境，全置为 0 即可
+            parkour_cmds.push_back(0.0f);
+            parkour_cmds.push_back(0.0f);
+
+            obs_list.push_back(parkour_cmds);
+        }
+        else if (observation == "contact_fill") // 对应 49~52 维 (4维)
+        {
+            // 足端接触状态，调用自定义函数获取
+            obs_list.push_back(this->GetContactFill());
+        }
     }
 
     this->obs_dims.clear();
@@ -181,6 +216,12 @@ std::vector<float> RL::ComputeObservation()
     }
     std::vector<float> clamped_obs = clamp(obs, -this->params.Get<float>("clip_obs"), this->params.Get<float>("clip_obs"));
     return clamped_obs;
+}
+
+std::vector<float> RL::GetContactFill()
+{
+    // todo unitree获取力矩
+    return std::vector<float>(4, 0.5f);
 }
 
 void RL::InitObservations()
@@ -682,4 +723,35 @@ std::vector<std::vector<float>> RL::GetDepthBuffer()
 {
     // 返回包含最新 buffer_len (即2帧) 的数据队列
     return this->depth_camera_data.depth_buffer;
+}
+
+// 建议加上 const 和 &，避免 vector 的拷贝开销
+std::vector<float> RL::DepthEncoderForward(const std::vector<float> &current_proprioception)
+{
+    // 2. 可选优化：如果深度相机没有新数据，直接返回上一次推理的特征，节省大量算力
+    if (!this->depth_camera_data.has_new_data)
+    {
+        return this->depth_camera_data.depth_latent;
+    }
+
+    // 3. 准备第一个输入：depth_image
+    std::vector<float> depth_input = this->depth_camera_data.depth_buffer.front(); // 5. 执行模型前向推理
+    std::vector<float> encoded_latent;
+    try
+    {
+        // 这里的 {depth_input, current_proprioception} 完美对应了你 Python 里的顺序：(depth_image, proprioception)
+        encoded_latent = this->depth_encoder_model->forward({depth_input, current_proprioception});
+    }
+    catch (const std::exception &e)
+    {
+        std::cerr << LOGGER::ERROR << "Depth encoder forward failed: " << e.what() << std::endl;
+        // 如果推理失败，返回上一次安全的特征以防止程序崩溃
+        return this->depth_camera_data.depth_latent;
+    }
+
+    // 6. 成功推理后，更新内部缓存，并重置新数据标志
+    this->depth_camera_data.depth_latent = encoded_latent;
+    this->depth_camera_data.has_new_data = false;
+
+    return encoded_latent;
 }
