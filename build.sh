@@ -119,7 +119,7 @@ run_ros_build() {
         else
             print_header "[Using colcon build]"
             print_info "Building all packages..."
-            colcon build --merge-install --symlink-install --cmake-args -DPython3_EXECUTABLE=/usr/bin/python3.8
+            colcon build --merge-install --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Debug -DPython3_EXECUTABLE=/usr/bin/python3.8
         fi
     else
         if [[ "$ROS_DISTRO" == "noetic" ]]; then
