@@ -1,0 +1,205 @@
+# Copyright (c) 2024-2025 Ziqi Fan
+# SPDX-License-Identifier: Apache-2.0
+# Parkour task configuration with depth camera integration
+
+go2/parkour:
+  # Model configuration
+  model_name: "policy.pt"
+  depth_encoder_model: "depth_latest.pt"  # Depth camera encoder model
+  
+  # Observation configuration
+  num_observations: 77  # 45 base + 32 depth features
+  observations: ["ang_vel", "gravity_vec", "commands", "dof_pos", "dof_vel", "depth_features", "actions"]
+  observations_history: []  # 0 is the latest observation
+  observations_history_priority: "time"  # "time" or "term" priority
+  clip_obs: 100.0
+  
+  # Action clipping (12 DOF - FR, FL, RR, RL hip, thigh, calf)
+  clip_actions_lower: [-100.0, -100.0, -100.0,
+                       -100.0, -100.0, -100.0,
+                       -100.0, -100.0, -100.0,
+                       -100.0, -100.0, -100.0]
+  clip_actions_upper: [100.0, 100.0, 100.0,
+                       100.0, 100.0, 100.0,
+                       100.0, 100.0, 100.0,
+                       100.0, 100.0, 100.0]
+  
+  # RL control gains
+  rl_kp: [20.0, 20.0, 20.0,
+          20.0, 20.0, 20.0,
+          20.0, 20.0, 20.0,
+          20.0, 20.0, 20.0]
+  rl_kd: [0.5, 0.5, 0.5,
+          0.5, 0.5, 0.5,
+          0.5, 0.5, 0.5,
+          0.5, 0.5, 0.5]
+  
+  # Fixed control gains (fallback)
+  fixed_kp: [80.0, 80.0, 80.0,
+             80.0, 80.0, 80.0,
+             80.0, 80.0, 80.0,
+             80.0, 80.0, 80.0]
+  fixed_kd: [3.0, 3.0, 3.0,
+             3.0, 3.0, 3.0,
+             3.0, 3.0, 3.0,
+             3.0, 3.0, 3.0]
+  
+  # Robot configuration
+  num_of_dofs: 12
+  action_scale: [0.125, 0.25, 0.25,
+                 0.125, 0.25, 0.25,
+                 0.125, 0.25, 0.25,
+                 0.125, 0.25, 0.25]
+  wheel_indices: []
+  
+  # Scaling factors
+  lin_vel_scale: 2.0
+  ang_vel_scale: 0.25
+  dof_pos_scale: 1.0
+  dof_vel_scale: 0.05
+  commands_scale: [1.0, 1.0, 1.0]
+  
+  # Torque limits
+  torque_limits: [23.5, 23.5, 23.5,
+                  23.5, 23.5, 23.5,
+                  23.5, 23.5, 23.5,
+                  23.5, 23.5, 23.5]
+  
+  # Default joint positions (neutral)
+  default_dof_pos: [0.00, 0.80, -1.50,
+                    0.00, 0.80, -1.50,
+                    0.00, 0.80, -1.50,
+                    0.00, 0.80, -1.50]
+  
+  # Joint mapping
+  joint_mapping: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+
+# Depth camera configuration
+depth_camera:
+  enabled: true
+  image_width: 58
+  image_height: 87
+  image_size: 5046  # 87 * 58
+  encoding: "32FC1"  # float32 encoding
+  depth_process_interval: 5  # Process depth camera every N control steps
+  ros_topic: "/depth_camera/image_raw"
+  
+  # Depth encoder specifications
+  encoder:
+    model_name: "depth_latest.pt"
+    input_size: 5099  # 5046 (depth) + 53 (proprioception)
+    output_size: 34   # 32 features + 2 yaw angles
+    hidden_size: 512  # GRU hidden state dimension
+    num_layers: 1
+
+# Preprocessing specifications
+preprocessing:
+  depth_image_size: 5046  # 87 * 58 pixels (float32)
+  proprioception_min_size: 53
+  proprioception_format: "imu_4 + gyro_3 + joints_12*3"  # quaternion + gyroscope + (pos, vel, tau)*12
+  yaw_reset_indices: [6, 7]  # Must be set to zero before encoding
+  yaw_reset_value: 0.0
+  combined_input_size: 5099  # depth + proprioception
+
+# Postprocessing specifications
+postprocessing:
+  encoder_output_size: 34  # 32 visual features + 2 yaw angles
+  feature_extraction_start: 0
+  feature_extraction_end: 32
+  feature_dim: 32
+  yaw_extraction_start: 32
+  yaw_extraction_end: 34
+  yaw_scale_factor: 1.5  # Mandatory scaling per play.py L186
+  yaw_update_indices: [6, 7]
+
+# GRU state management
+gru_state:
+  num_layers: 1
+  batch_size: 1
+  hidden_size: 512
+  dtype: "float32"
+  reset_on_episode: true
+
+# Processing pipeline
+pipeline:
+  steps:
+    - name: "depth_image_reception"
+      interval: 1  # Every step (asynchronous ROS callback)
+      timeout_ms: 50
+    
+    - name: "depth_preprocessing"
+      interval: 5  # Every 5 steps
+      timeout_ms: 5
+      operations:
+        - validate_depth_size
+        - validate_proprioception_size
+        - reset_yaw_indices
+        - combine_depth_and_proprioception
+    
+    - name: "depth_encoding"
+      interval: 5  # Every 5 steps
+      timeout_ms: 10
+      model: "depth_latest.pt"
+    
+    - name: "feature_postprocessing"
+      interval: 5  # Every 5 steps
+      timeout_ms: 2
+      operations:
+        - extract_visual_features
+        - extract_and_scale_yaw
+        - update_proprioception_yaw
+    
+    - name: "observation_injection"
+      interval: 5  # Every 5 steps
+      timeout_ms: 1
+      target_observation: "depth_features"
+
+# Validation and error handling
+validation:
+  strict_mode: true
+  log_level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  enable_assertions: true
+  checks:
+    - name: "depth_image_format"
+      enabled: true
+      tolerance: 0.0
+    - name: "proprioception_dimensions"
+      enabled: true
+      min_size: 53
+    - name: "encoder_output_size"
+      enabled: true
+      expected_size: 34
+    - name: "yaw_scaling"
+      enabled: true
+      expected_scale: 1.5
+    - name: "gru_state_shape"
+      enabled: true
+      expected_shape: [1, 1, 512]
+
+# Performance tuning
+performance:
+  enable_profiling: false
+  profile_intervals: [5, 100]  # Measure every 5 and 100 steps
+  buffer_depth_images: true
+  max_buffer_size: 10
+  use_gpu_preprocessing: false  # Set true if GPU available
+  num_processing_threads: 1
+
+# Logging and monitoring
+monitoring:
+  enable_logging: true
+  log_depth_reception: true
+  log_preprocessing_stats: false
+  log_encoding_stats: false
+  log_postprocessing_stats: false
+  debug_depth_images: false
+  save_debug_frames: false
+  debug_output_dir: "/tmp/parkour_depth_debug"
+
+# Fallback and recovery
+fallback:
+  use_previous_depth_on_error: true
+  max_consecutive_errors: 10
+  reset_on_max_errors: true
+  use_default_features_on_failure: true
+  default_feature_value: 0.0

@@ -95,7 +95,7 @@ RL_Sim::RL_Sim(int argc, char **argv)
     // subscriber
     this->cmd_vel_subscriber = nh.subscribe<geometry_msgs::Twist>("/cmd_vel", 10, &RL_Sim::CmdvelCallback, this);
     this->joy_subscriber = nh.subscribe<sensor_msgs::Joy>("/joy", 10, &RL_Sim::JoyCallback, this);
-    this->depth_camera_subscriber = nh.subscribe<sensor_msgs::Image>("/depth_camera/image_raw", 1, &RL_Sim::DepthCameraCallback, this);
+    this->depth_camera_subscriber = nh.subscribe<sensor_msgs::Image>("/depth/image_raw", 1, &RL_Sim::DepthCameraCallback, this);
     this->model_state_subscriber = nh.subscribe<gazebo_msgs::ModelStates>("/gazebo/model_states", 10, &RL_Sim::ModelStatesCallback, this);
     for (int i = 0; i < this->params.Get<int>("num_of_dofs"); ++i)
     {
@@ -143,7 +143,7 @@ RL_Sim::RL_Sim(int argc, char **argv)
     
     // Depth camera subscriber
     this->depth_camera_subscriber = ros2_node->create_subscription<sensor_msgs::msg::Image>(
-        "/depth_camera/image_raw", rclcpp::SensorDataQoS(),
+        "/depth/image_raw", rclcpp::SensorDataQoS(),
         [this] (const sensor_msgs::msg::Image::SharedPtr msg) {this->DepthCameraCallback(msg);}
     );
 
@@ -478,18 +478,10 @@ void RL_Sim::RunModel()
         this->obs.dof_vel = this->robot_state.motor_state.dq;
 
         // ===== Depth Camera Data Processing =====
-        // Process depth camera every N steps (default: 5)
-        if (this->episode_length_buf % this->depth_camera_data.depth_process_interval == 0)
-        {
-            // Depth camera data is received asynchronously via ROS callback
-            // The raw_depth_image will be populated by DepthCameraCallback()
-            if (!this->depth_camera_data.raw_depth_image.empty())
-            {
-                this->depth_camera_data.has_new_data = true;
-            }
-        }
+        std::vector<std::vector<float>> buffer;
+        buffer = this->GetDepthBuffer();
 
-        this->obs.actions = this->Forward();
+        this -> obs.actions = this->Forward();
         this->ComputeOutput(this->obs.actions, this->output_dof_pos, this->output_dof_vel, this->output_dof_tau);
 
         if (!this->output_dof_pos.empty())
@@ -580,17 +572,6 @@ void RL_Sim::Plot()
     plt::pause(0.01);
 }
 
-void RL_Sim::CmdvelCallback(
-#if defined(USE_ROS1)
-    const geometry_msgs::Twist::ConstPtr &msg
-#elif defined(USE_ROS2)
-    const geometry_msgs::msg::Twist::SharedPtr msg
-#endif
-)
-{
-    this->cmd_vel = *msg;
-}
-
 void RL_Sim::DepthCameraCallback(
 #if defined(USE_ROS1)
     const sensor_msgs::Image::ConstPtr &msg
@@ -599,42 +580,43 @@ void RL_Sim::DepthCameraCallback(
 #endif
 )
 {
-    /**
-     * ROS depth camera callback
-     * 
-     * Converts ROS sensor_msgs::Image to std::vector<float>
-     * Expected format: float32 depth image with encoding "32FC1"
-     * Size: width * height (typically 58 * 87 = 5046)
-     * 
-     * This function runs in a separate ROS callback thread,
-     * so raw data is stored and processed later in RunModel()
-     */
-    
-    try {
-        if (msg->encoding != "32FC1") {
-            std::cerr << LOGGER::ERROR << "Expected depth image encoding '32FC1', got '" 
-                      << msg->encoding << "'" << std::endl;
+    try
+    {
+        // 1. 降采样频率控制 (例如每 5 步处理 1 帧)
+        if (this->depth_camera_data.step_counter % this->depth_camera_data.depth_process_interval != 0)
+        {
+            this->depth_camera_data.step_counter++;
             return;
         }
-        
-        // Calculate expected size: width * height
-        size_t expected_size = msg->width * msg->height;
-        size_t data_size = msg->data.size() / sizeof(float);
-        
-        if (data_size != expected_size) {
-            std::cerr << LOGGER::ERROR << "Depth image size mismatch: expected " 
-                      << expected_size << ", got " << data_size << std::endl;
-            return;
+        this->depth_camera_data.step_counter++;
+
+        // 2. 直接按 Gazebo 默认的 16UC1 格式读取数据
+        size_t expected_pixels = msg->width * msg->height;
+        const uint16_t *ptr = reinterpret_cast<const uint16_t *>(msg->data.data());
+
+        // 3. 转换为浮点数并统一为米制 (毫米 -> 米)
+        std::vector<float> depth_float_data(expected_pixels);
+        for (size_t i = 0; i < expected_pixels; ++i)
+        {
+            depth_float_data[i] = static_cast<float>(ptr[i]) / 1000.0f;
         }
-        
-        // Convert ROS message data to std::vector<float>
-        const float* depth_ptr = reinterpret_cast<const float*>(msg->data.data());
-        this->depth_camera_data.raw_depth_image.assign(depth_ptr, depth_ptr + data_size);
-        
-        std::cout << LOGGER::DEBUG << "Received depth image: " << msg->width << "x" 
-                  << msg->height << " (size: " << data_size << ")" << std::endl;
+
+        // 4. 图像裁剪、缩放与归一化
+        std::vector<float> processed_image = ProcessDepthImage(depth_float_data.data(), msg->width, msg->height);
+
+        // 5. 维护历史帧队列 (FIFO 滑动窗口)
+        auto &buffer = this->depth_camera_data.depth_buffer;
+        if (buffer.size() >= this->depth_camera_data.buffer_len)
+        {
+            buffer.erase(buffer.begin()); // 移除最旧的一帧
+        }
+        buffer.push_back(processed_image); // 压入最新的一帧
+
+        // 6. 标记新数据已就绪
+        this->depth_camera_data.has_new_data = true;
     }
-    catch (const std::exception &e) {
+    catch (const std::exception &e)
+    {
         std::cerr << LOGGER::ERROR << "Exception in DepthCameraCallback: " << e.what() << std::endl;
     }
 }
@@ -649,6 +631,11 @@ void signalHandler(int signum)
 
 int main(int argc, char **argv)
 {
+    //== == == == == == 新增调试代码 START == == == == == ==
+    std::cout << "\n\n>>> 正在等待调试器 Attach..." << std::endl;
+    std::cout << ">>> 请在 VS Code 启动 Attach，然后按回车键继续..." << std::endl;
+    std::cin.get(); // 程序会卡在这里，直到你按回车
+    // ============ 新增调试代码 END ============
 #if defined(USE_ROS1)
     signal(SIGINT, signalHandler);
     ros::init(argc, argv, "rl_sar");

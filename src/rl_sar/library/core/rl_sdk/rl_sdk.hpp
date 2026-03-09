@@ -184,15 +184,36 @@ struct Observations
 
 struct DepthCameraData
 {
-    std::vector<float> raw_depth_image;           // Raw depth image data (87*58 = 5046)
-    std::vector<float> depth_latent;              // Depth features (32 dims)
-    std::vector<float> depth_latent_and_yaw;      // Depth features + yaw (34 dims)
-    std::vector<float> gru_hidden_state;          // GRU hidden state for recurrent encoding (1*batch*512)
-    int step_counter;                             // Step counter for interval-based processing
-    int depth_process_interval;                   // Process depth every N steps (default: 5)
-    bool has_new_data;                            // Flag indicating new depth data available
-    
-    DepthCameraData() : step_counter(0), depth_process_interval(5), has_new_data(false) {}
+    // === 数据缓冲 ===
+    std::vector<float> raw_depth_image;           // 原始深度图像数据
+    std::vector<std::vector<float>> depth_buffer; // 处理后的历史帧滑动窗口队列
+
+    // === 神经网络特征 ===
+    std::vector<float> depth_latent;         // Depth features (32 dims)
+    std::vector<float> depth_latent_and_yaw; // Depth features + yaw (34 dims)
+
+    // === 图像处理超参数 ===
+    int buffer_len;       // 缓存的最大帧数 (设为 2)
+    int target_width;     // Resize 目标宽度 (设为 58)
+    int target_height;    // Resize 目标高度 (设为 87)
+    float clipping_range; // 深度截断/归一化范围 (设为 2.0)
+
+    // === 频率控制与状态标志 ===
+    unsigned long long step_counter; // 步数计数器
+    int depth_process_interval;      // 每 N 步采样一次 (设为 5)
+    bool has_new_data;               // 是否有新数据标志
+
+    // 构造函数：初始化所有指定的参数
+    DepthCameraData()
+        : buffer_len(2),        // 更新：历史缓存长度为 2
+          target_width(58),     // 更新：Resize 宽度为 58
+          target_height(87),    // 更新：Resize 高度为 87
+          clipping_range(2.0f), // 更新：裁剪/归一化范围为 2.0
+          step_counter(0),
+          depth_process_interval(5), // 保持 % 5 采样的频率
+          has_new_data(false)
+    {
+    }
 };
 
 class RL
@@ -205,6 +226,7 @@ public:
     Observations<float> obs;
     std::vector<int> obs_dims;
     DepthCameraData depth_camera_data;
+    bool has_depth_encoder = true;
 
     RobotState<float> robot_state;
     RobotCommand<float> robot_command;
@@ -233,19 +255,8 @@ public:
     void ComputeOutput(const std::vector<float> &actions, std::vector<float> &output_dof_pos, std::vector<float> &output_dof_vel, std::vector<float> &output_dof_tau);
 
     // depth camera functions
-    void InitDepthCameraGRUState(int batch_size = 1);
-    void ResetDepthCameraGRUState();
-    std::vector<float> ProcessDepthCameraPreprocessing(
-        const std::vector<float> &raw_depth_data,
-        const std::vector<float> &proprioception
-    );
-    std::vector<float> ProcessDepthCameraPostprocessing(
-        const std::vector<float> &depth_encoder_output,
-        std::vector<float> &proprioception
-    );
-    const std::vector<float>& GetDepthLatent() const {
-        return depth_camera_data.depth_latent;
-    }
+    std::vector<float> ProcessDepthImage(const float *raw_data, int width, int height);
+    std::vector<std::vector<float>> GetDepthBuffer();
 
     // yaml params
     void ReadYaml(const std::string& file_path, const std::string& file_name);

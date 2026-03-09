@@ -111,23 +111,6 @@ std::vector<float> RL::ComputeObservation()
             obs_list.push_back(this->obs.actions);
         }
         // ============= Depth Camera Observation =============
-        else if (observation == "depth_camera")
-        {
-            // Process depth camera data if available
-            if (!this->depth_camera_data.raw_depth_image.empty())
-            {
-                std::vector<float> depth_obs = this->ProcessDepthCameraPreprocessing(
-                    this->depth_camera_data.raw_depth_image,
-                    this->obs.dof_pos
-                );
-                obs_list.push_back(depth_obs);
-            }
-            else
-            {
-                // Fill with zero vector if no depth data (32 dims)
-                obs_list.push_back(std::vector<float>(32, 0.0f));
-            }
-        }
         // ============= Other Observations =============
         else if (observation == "whole_body_tracking/motion_command")
         {
@@ -270,23 +253,13 @@ void RL::InitRL(std::string robot_config_path)
         throw std::runtime_error("Failed to load model from: " + model_path);
     }
     
-    // init depth encoder model if depth camera is enabled
-    if (this->params.Get<bool>("depth_camera_enabled"))
+    // init depth encoder model
+
+    std::string depth_encoder_path = std::string(POLICY_DIR) + "/" + robot_config_path + "/" + this->params.Get<std::string>("depth_encoder_model");
+    this->depth_encoder_model = InferenceRuntime::ModelFactory::load_model(depth_encoder_path);
+    if (!this->depth_encoder_model)
     {
-        std::string depth_encoder_path = std::string(POLICY_DIR) + "/" + robot_config_path + "/depth_latest.pt";
-        this->depth_encoder_model = InferenceRuntime::ModelFactory::load_model(depth_encoder_path);
-        if (!this->depth_encoder_model)
-        {
-            std::cerr << LOGGER::WARN << "Failed to load depth encoder from: " << depth_encoder_path 
-                      << ". Depth camera will be disabled." << std::endl;
-            this->depth_camera_data.raw_depth_image.clear();
-        }
-        else
-        {
-            // Initialize depth encoder GRU hidden states
-            this->InitDepthCameraGRUState();
-            std::cout << LOGGER::INFO << "Depth encoder model loaded successfully" << std::endl;
-        }
+        throw std::runtime_error("Failed to load depth_encoder model from: " + depth_encoder_path);
     }
 }
 
@@ -645,189 +618,68 @@ void RLFSMState::RLControl()
     }
 }
 // ===== Depth Camera Functions =====
-
-void RL::InitDepthCameraGRUState(int batch_size)
+std::vector<float> RL::ProcessDepthImage(const float *raw_data, int width, int height)
 {
-    /**
-     * Initialize GRU hidden state for depth encoder
-     * 
-     * GRU state shape: (num_layers=1, batch_size, hidden_size=512)
-     * For inference, batch_size is typically 1
-     * 
-     * The actual tensor is managed by the InferenceRuntime framework
-     * This function initializes the state to zeros, which is required
-     * for the first forward pass through the GRU
-     */
-    
-    if (!this->depth_encoder_model) {
-        std::cerr << LOGGER::ERROR << "Cannot initialize GRU state: depth encoder model not loaded" << std::endl;
-        return;
-    }
-    
-    try {
-        // GRU hidden state: (1, batch_size, 512) = 512 * batch_size elements
-        const int hidden_size = 512;
-        int gru_state_size = 1 * batch_size * hidden_size;
-        
-        // Initialize state to zeros
-        // In actual JIT model, this is managed internally
-        // We just ensure it's allocated and zeroed
-        this->depth_camera_data.gru_hidden_state.assign(gru_state_size, 0.0f);
-        
-        std::cout << LOGGER::INFO << "Depth camera GRU state initialized: batch_size=" << batch_size 
-                  << ", state_size=" << gru_state_size << std::endl;
-    }
-    catch (const std::exception &e) {
-        std::cerr << LOGGER::ERROR << "Exception in InitDepthCameraGRUState: " << e.what() << std::endl;
-    }
-}
+    // --- 第一步：Crop (去掉下边2行，左右各去掉4列) ---
+    int crop_top = 0, crop_bottom = 2, crop_left = 4, crop_right = 4;
+    int crop_w = width - crop_left - crop_right;
+    int crop_h = height - crop_top - crop_bottom;
 
-void RL::ResetDepthCameraGRUState()
-{
-    /**
-     * Reset GRU hidden state to zeros
-     * 
-     * This should be called at the beginning of each episode
-     * to ensure the GRU starts from a clean state
-     */
-    
-    try {
-        std::fill(this->depth_camera_data.gru_hidden_state.begin(), 
-                  this->depth_camera_data.gru_hidden_state.end(), 0.0f);
-        std::cout << LOGGER::DEBUG << "Depth camera GRU state reset" << std::endl;
-    }
-    catch (const std::exception &e) {
-        std::cerr << LOGGER::ERROR << "Exception in ResetDepthCameraGRUState: " << e.what() << std::endl;
-    }
-}
-
-std::vector<float> RL::ProcessDepthCameraPreprocessing(
-    const std::vector<float> &raw_depth_data,
-    const std::vector<float> &proprioception
-)
-{
-    /**
-     * Depth camera preprocessing pipeline:
-     * 
-     * Step 1: Depth image preprocessing
-     *   - Input shape: (87, 58) = 5046 floats
-     *   - Optional: normalization, histogram equalization
-     * 
-     * Step 2: Proprioception preprocessing
-     *   - Copy proprioception
-     *   - obs_student[6:8] = 0  // Reset yaw angle
-     * 
-     * Step 3: Call depth encoder JIT model
-     *   - Input: depth_image (87, 58), obs_student (53)
-     *   - Output: depth_latent (32)
-     * 
-     * Step 4: Return preprocessed observation vector
-     */
-    
-    // 维度验证 (JIT_INFERENCE_GUIDE.md L70-75 要求)
-    if (raw_depth_data.size() != 87 * 58) {
-        std::cerr << LOGGER::ERROR << "Invalid depth image size: expected " << (87*58) 
-                  << ", got " << raw_depth_data.size() << std::endl;
-        return std::vector<float>(32, 0.0f);
-    }
-    
-    if (proprioception.size() < 53) {
-        std::cerr << LOGGER::ERROR << "Invalid proprioception size: expected >= 53, got " 
-                  << proprioception.size() << std::endl;
-        return std::vector<float>(32, 0.0f);
-    }
-    
-    if (!this->depth_encoder_model) {
-        std::cerr << LOGGER::ERROR << "Depth encoder model not loaded" << std::endl;
-        return std::vector<float>(32, 0.0f);
-    }
-    
-    // Prepare proprioception input with reset yaw (必须在第6、7位设为0)
-    // 参考 play.py L178: obs_student[:, 6:8] = 0
-    std::vector<float> obs_student = proprioception;
-    obs_student[6] = 0.0f;  // Reset yaw angle - 必须
-    obs_student[7] = 0.0f;  // 必须
-    
-    try {
-        // Combine depth image and proprioception into single input vector
-        // Format: [depth_image (5046), obs_student (53)] = 5099 elements
-        std::vector<float> model_input;
-        model_input.reserve(5046 + 53);
-        model_input.insert(model_input.end(), raw_depth_data.begin(), raw_depth_data.end());
-        model_input.insert(model_input.end(), obs_student.begin(), obs_student.end());
-        
-        // Call depth encoder model
-        // Expected output: 32-dim latent features (yaw added in postprocessing)
-        std::vector<float> encoder_output = this->depth_encoder_model->forward({model_input});
-        
-        if (encoder_output.size() < 32) {
-            std::cerr << LOGGER::ERROR << "Depth encoder output too small: expected >= 32, got " 
-                      << encoder_output.size() << std::endl;
-            return std::vector<float>(32, 0.0f);
+    std::vector<float> cropped(crop_w * crop_h);
+    for (int y = 0; y < crop_h; ++y)
+    {
+        for (int x = 0; x < crop_w; ++x)
+        {
+            cropped[y * crop_w + x] = raw_data[(y + crop_top) * width + (x + crop_left)];
         }
-        
-        // Return first 32 dimensions (depth features)
-        return std::vector<float>(encoder_output.begin(), encoder_output.begin() + 32);
     }
-    catch (const std::exception &e) {
-        std::cerr << LOGGER::ERROR << "Exception in ProcessDepthCameraPreprocessing: " << e.what() << std::endl;
-        return std::vector<float>(32, 0.0f);
+
+    // --- 第二步：Resize (双线性插值缩放到目标尺寸) ---
+    int t_w = this->depth_camera_data.target_width;  // 58
+    int t_h = this->depth_camera_data.target_height; // 87
+    std::vector<float> resized(t_w * t_h);
+
+    float x_ratio = static_cast<float>(crop_w - 1) / t_w;
+    float y_ratio = static_cast<float>(crop_h - 1) / t_h;
+
+    for (int i = 0; i < t_h; i++)
+    {
+        for (int j = 0; j < t_w; j++)
+        {
+            int x = static_cast<int>(x_ratio * j);
+            int y = static_cast<int>(y_ratio * i);
+            float x_diff = (x_ratio * j) - x;
+            float y_diff = (y_ratio * i) - y;
+
+            // 越界保护
+            int idx_a = y * crop_w + x;
+            int idx_b = std::min(idx_a + 1, crop_h * crop_w - 1);
+            int idx_c = std::min(idx_a + crop_w, crop_h * crop_w - 1);
+            int idx_d = std::min(idx_a + crop_w + 1, crop_h * crop_w - 1);
+
+            resized[i * t_w + j] = cropped[idx_a] * (1 - x_diff) * (1 - y_diff) +
+                                   cropped[idx_b] * (x_diff) * (1 - y_diff) +
+                                   cropped[idx_c] * (y_diff) * (1 - x_diff) +
+                                   cropped[idx_d] * (x_diff * y_diff);
+        }
     }
+
+    // --- 第三步：Normalize (根据 clipping_range 归一化) ---
+    float clip_range = this->depth_camera_data.clipping_range; // 2.0f
+    for (auto &val : resized)
+    {
+        // 1. 强制截断：把所有大于 2.0 米的值削平到 2.0，所有负数异常值限制到 0
+        val = std::clamp(val, 0.0f, clip_range);
+
+        // 2. 线性归一化：将 [0, 2.0] 映射到 [-0.5, 0.5]
+        val = (val / clip_range) - 0.5f;
+    }
+
+    return resized;
 }
 
-std::vector<float> RL::ProcessDepthCameraPostprocessing(
-    const std::vector<float> &depth_encoder_output,
-    std::vector<float> &proprioception
-)
+std::vector<std::vector<float>> RL::GetDepthBuffer()
 {
-    /**
-     * Depth camera postprocessing pipeline (参考 JIT_INFERENCE_GUIDE.md L187-197):
-     * 
-     * Step 1: Separate output
-     *   - depth_latent = output[0:32]        # 32维编码特征
-     *   - yaw = output[32:34]                # 2维偏航角
-     * 
-     * Step 2: Apply yaw angle
-     *   - yaw *= 1.5  (缩放因子 - 必须)
-     *   - proprioception[6:8] = yaw         # 更新观测中的偏航
-     * 
-     * Step 3: Return depth features for policy inference
-     */
-    
-    // 验证输出大小: depth_latest.pt 必须输出34维
-    // (32维特征 + 2维偏航) 参考 RecurrentDepthBackbone L158-161
-    if (depth_encoder_output.size() != 34) {
-        std::cerr << LOGGER::ERROR << "Expected depth_encoder_output size 34 from depth_latest.pt, got " 
-                  << depth_encoder_output.size() << std::endl;
-        return std::vector<float>(32, 0.0f);
-    }
-    
-    if (proprioception.size() < 8) {
-        std::cerr << LOGGER::ERROR << "Invalid proprioception size: expected >= 8, got " 
-                  << proprioception.size() << std::endl;
-        return std::vector<float>(32, 0.0f);
-    }
-    
-    // 分离输出: 32维特征 + 2维偏航
-    // 参考 play.py L184-186
-    std::vector<float> depth_latent(
-        depth_encoder_output.begin(),
-        depth_encoder_output.begin() + 32  // 前32维是编码特征
-    );
-    
-    // 提取后2维作为偏航角
-    float yaw_0 = depth_encoder_output[32];
-    float yaw_1 = depth_encoder_output[33];
-    
-    // 应用偏航缩放因子 (必须为1.5，参考 play.py L186)
-    // obs[:, 6:8] = 1.5 * yaw
-    const float YAW_SCALE = 1.5f;
-    proprioception[6] = yaw_0 * YAW_SCALE;
-    proprioception[7] = yaw_1 * YAW_SCALE;
-    if (proprioception.size() >= 8) {
-        proprioception[6] = yaw[0];
-        proprioception[7] = yaw[1];
-    }
-    
-    return depth_latent;
+    // 返回包含最新 buffer_len (即2帧) 的数据队列
+    return this->depth_camera_data.depth_buffer;
 }
