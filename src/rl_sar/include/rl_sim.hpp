@@ -29,10 +29,7 @@
 #include <ros/ros.h>
 #include "std_srvs/Empty.h"
 #include <sensor_msgs/Joy.h>
-<<<<<<< HEAD
 #include <sensor_msgs/Image.h>
-=======
->>>>>>> e384912fb4b24cb09bfe190686b113b7348019c9
 #include <geometry_msgs/Twist.h>
 #include <gazebo_msgs/ModelStates.h>
 #include "robot_msgs/MotorCommand.h"
@@ -44,10 +41,7 @@
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/joy.hpp>
-<<<<<<< HEAD
 #include <sensor_msgs/msg/image.hpp>
-=======
->>>>>>> e384912fb4b24cb09bfe190686b113b7348019c9
 #include <geometry_msgs/msg/twist.hpp>
 #include <std_srvs/srv/empty.hpp>
 #include <rcl_interfaces/srv/get_parameters.hpp>
@@ -106,13 +100,10 @@ private:
     void JointStatesCallback(const robot_msgs::MotorState::ConstPtr &msg, const std::string &joint_controller_name);
     void CmdvelCallback(const geometry_msgs::Twist::ConstPtr &msg);
     void JoyCallback(const sensor_msgs::Joy::ConstPtr &msg);
-<<<<<<< HEAD
     
     // Depth camera subscriber
     ros::Subscriber depth_camera_subscriber;
     void DepthCameraCallback(const sensor_msgs::Image::ConstPtr &msg);
-=======
->>>>>>> e384912fb4b24cb09bfe190686b113b7348019c9
 #elif defined(USE_ROS2)
     sensor_msgs::msg::Imu gazebo_imu;
     geometry_msgs::msg::Twist cmd_vel;
@@ -133,13 +124,10 @@ private:
     void CmdvelCallback(const geometry_msgs::msg::Twist::SharedPtr msg);
     void RobotStateCallback(const robot_msgs::msg::RobotState::SharedPtr msg);
     void JoyCallback(const sensor_msgs::msg::Joy::SharedPtr msg);
-<<<<<<< HEAD
     
     // Depth camera subscriber
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr depth_camera_subscriber;
     void DepthCameraCallback(const sensor_msgs::msg::Image::SharedPtr msg);
-=======
->>>>>>> e384912fb4b24cb09bfe190686b113b7348019c9
 #endif
 
     // others
