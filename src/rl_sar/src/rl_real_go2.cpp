@@ -12,16 +12,11 @@ RL_Real::RL_Real(int argc, char **argv)
 #if defined(USE_ROS1) && defined(USE_ROS)
     ros::NodeHandle nh;
     this->cmd_vel_subscriber = nh.subscribe<geometry_msgs::Twist>("/cmd_vel", 10, &RL_Real::CmdvelCallback, this);
-    this->depth_camera_subscriber = nh.subscribe<sensor_msgs::Image>("/depth_camera/image_raw", 1, &RL_Real::DepthCameraCallback, this);
 #elif defined(USE_ROS2) && defined(USE_ROS)
-    ros2_node = std::make_shared<rclcpp::Node>("rl_sar");
+    ros2_node = std::make_shared<rclcpp::Node>("rl_real_node");
     this->cmd_vel_subscriber = ros2_node->create_subscription<geometry_msgs::msg::Twist>(
         "/cmd_vel", rclcpp::SystemDefaultsQoS(),
         [this] (const geometry_msgs::msg::Twist::SharedPtr msg) {this->CmdvelCallback(msg);}
-    );
-    this->depth_camera_subscriber = ros2_node->create_subscription<sensor_msgs::msg::Image>(
-        "/depth_camera/image_raw", rclcpp::SensorDataQoS(),
-        [this] (const sensor_msgs::msg::Image::SharedPtr msg) {this->DepthCameraCallback(msg);}
     );
 #endif
 
@@ -211,18 +206,6 @@ void RL_Real::RunModel()
         this->obs.base_quat = this->robot_state.imu.quaternion;
         this->obs.dof_pos = this->robot_state.motor_state.q;
         this->obs.dof_vel = this->robot_state.motor_state.dq;
-
-        // ===== Depth Camera Data Processing =====
-        // Process depth camera every N steps (default: 5)
-        if (this->episode_length_buf % this->depth_camera_data.depth_process_interval == 0)
-        {
-            // Depth camera data is received asynchronously via ROS callback
-            // The raw_depth_image will be populated by DepthCameraCallback()
-            if (!this->depth_camera_data.raw_depth_image.empty())
-            {
-                this->depth_camera_data.has_new_data = true;
-            }
-        }
 
         this->obs.actions = this->Forward();
         this->ComputeOutput(this->obs.actions, this->output_dof_pos, this->output_dof_vel, this->output_dof_tau);
@@ -422,54 +405,6 @@ void RL_Real::CmdvelCallback(
 )
 {
     this->cmd_vel = *msg;
-}
-
-void RL_Real::DepthCameraCallback(
-#if defined(USE_ROS1) && defined(USE_ROS)
-    const sensor_msgs::Image::ConstPtr &msg
-#elif defined(USE_ROS2) && defined(USE_ROS)
-    const sensor_msgs::msg::Image::SharedPtr msg
-#endif
-)
-{
-    /**
-     * ROS depth camera callback
-     * 
-     * Converts ROS sensor_msgs::Image to std::vector<float>
-     * Expected format: float32 depth image with encoding "32FC1"
-     * Size: width * height (typically 58 * 87 = 5046)
-     * 
-     * This function runs in a separate ROS callback thread,
-     * so raw data is stored and processed later in RunModel()
-     */
-    
-    try {
-        if (msg->encoding != "32FC1") {
-            std::cerr << LOGGER::ERROR << "Expected depth image encoding '32FC1', got '" 
-                      << msg->encoding << "'" << std::endl;
-            return;
-        }
-        
-        // Calculate expected size: width * height
-        size_t expected_size = msg->width * msg->height;
-        size_t data_size = msg->data.size() / sizeof(float);
-        
-        if (data_size != expected_size) {
-            std::cerr << LOGGER::ERROR << "Depth image size mismatch: expected " 
-                      << expected_size << ", got " << data_size << std::endl;
-            return;
-        }
-        
-        // Convert ROS message data to std::vector<float>
-        const float* depth_ptr = reinterpret_cast<const float*>(msg->data.data());
-        this->depth_camera_data.raw_depth_image.assign(depth_ptr, depth_ptr + data_size);
-        
-        std::cout << LOGGER::DEBUG << "Received depth image: " << msg->width << "x" 
-                  << msg->height << " (size: " << data_size << ")" << std::endl;
-    }
-    catch (const std::exception &e) {
-        std::cerr << LOGGER::ERROR << "Exception in DepthCameraCallback: " << e.what() << std::endl;
-    }
 }
 #endif
 

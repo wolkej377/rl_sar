@@ -126,20 +126,26 @@ private:
     geometry_msgs::Twist cmd_vel;
     ros::Subscriber cmd_vel_subscriber;
     void CmdvelCallback(const geometry_msgs::Twist::ConstPtr &msg);
+<<<<<<< HEAD
     
     // Depth camera subscriber
     sensor_msgs::Image depth_camera_data;
     ros::Subscriber depth_camera_subscriber;
     void DepthCameraCallback(const sensor_msgs::Image::ConstPtr &msg);
+=======
+>>>>>>> e384912fb4b24cb09bfe190686b113b7348019c9
 #elif defined(USE_ROS2) && defined(USE_ROS)
     geometry_msgs::msg::Twist cmd_vel;
     rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_subscriber;
     void CmdvelCallback(const geometry_msgs::msg::Twist::SharedPtr msg);
+<<<<<<< HEAD
     
     // Depth camera subscriber
     sensor_msgs::msg::Image depth_camera_data;
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr depth_camera_subscriber;
     void DepthCameraCallback(const sensor_msgs::msg::Image::SharedPtr msg);
+=======
+>>>>>>> e384912fb4b24cb09bfe190686b113b7348019c9
 #endif
 };
 
