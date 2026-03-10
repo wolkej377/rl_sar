@@ -7,7 +7,7 @@ log
 .catkin_tools
 cmake_build
 package.xml
-library
+/library/
 # Rust
 rust_build
 Cargo.lock
