@@ -119,7 +119,7 @@ run_ros_build() {
         else
             print_header "[Using colcon build]"
             print_info "Building all packages..."
-            colcon build --merge-install --symlink-install
+            colcon build --merge-install --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Debug
         fi
     else
         if [[ "$ROS_DISTRO" == "noetic" ]]; then
@@ -130,6 +130,7 @@ run_ros_build() {
             print_header "[Using colcon build]"
             print_info "Building specific packages: $package_list"
             colcon build --merge-install --symlink-install --packages-select $package_list
+            
         fi
     fi
 

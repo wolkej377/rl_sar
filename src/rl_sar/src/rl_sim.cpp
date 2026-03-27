@@ -571,6 +571,8 @@ void signalHandler(int signum)
 
 int main(int argc, char **argv)
 {
+    std::cout << ">>> 请在 VS Code 启动 Attach，然后按回车键继续..." << std::endl;
+    std::cin.get();
 #if defined(USE_ROS1)
     signal(SIGINT, signalHandler);
     ros::init(argc, argv, "rl_sar");
